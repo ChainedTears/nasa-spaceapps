@@ -6,6 +6,12 @@ const L = { data: null, incidents: null, token: 0, timer: null, clock: null, hot
 const LIVE_WINDOWS = { '24h': ['last 24 hours', 24], '48h': ['last 48 hours', 48], '7d': ['last 7 days', 168] };
 const REFRESH = 10 * 60000;
 
+/* Likely spread: which land around the fires in view can carry them (ESA WorldCover). */
+const SP = { data: null, token: 0, timer: null, box: null, state: 'off' };
+const SPREAD_COLORS = { 1: '#d9480f', 2: '#f08c2e', 3: '#ffd27a', 0: '#5f7f99' };
+const SPREAD_NAME = { 1: 'Very likely', 2: 'Likely', 3: 'Possible' };
+const SPREAD_MIN_ZOOM = 7, SPREAD_SPAN = 1.9;
+
 /* ------------------------------------------------------------------ map */
 
 const HEAT_ON = ['interpolate', ['linear'], ['zoom'], 0, 0.95, 5, 0.85, 7.5, 0];
@@ -35,6 +41,15 @@ mapReady.then(() => {
       'circle-opacity': 0, 'circle-opacity-transition': FADE,
     },
   }, 'season-a');
+  map.addSource('spread', { type: 'geojson', data: empty() });
+  map.addLayer({
+    id: 'spread-cell', type: 'circle', source: 'spread',
+    paint: {
+      'circle-pitch-alignment': 'map',
+      'circle-color': ['match', ['get', 'b'], 1, SPREAD_COLORS[1], 2, SPREAD_COLORS[2], 3, SPREAD_COLORS[3], SPREAD_COLORS[0]],
+      'circle-opacity': 0, 'circle-opacity-transition': FADE,
+    },
+  }, 'live-heat');
   setLiveLayers();
 });
 function setLiveLayers() {
@@ -42,6 +57,8 @@ function setLiveLayers() {
   const on = P.tab === 'live' && P.live.dots;
   map.setPaintProperty('live-heat', 'heatmap-opacity', on ? HEAT_ON : 0);
   map.setPaintProperty('live-dot', 'circle-opacity', on ? DOT_ON : 0);
+  const spread = P.tab === 'live' && P.live.spread && !!SP.data;
+  map.setPaintProperty('spread-cell', 'circle-opacity', spread ? ['match', ['get', 'b'], 0, 0.5, 1, 0.62, 2, 0.5, 0.38] : 0);
 }
 LAYER_HOOKS.push(setLiveLayers);
 
@@ -134,10 +151,15 @@ function prepareLive() {
 const LIVE_STATS = [['live-count', 'Fire detections'], ['live-strong', 'Strongest detection'], ['live-night', 'Seen at night'], ['live-named', 'Named fires (United States)']];
 registerDash('live', {
   el: $('live-report'),
-  sections: [['now', 'Right now'], ['hot', 'Hottest places'], ['named', 'Named fires'], ['when', 'When fires were seen'], ['about', 'About live data']],
+  sections: [['now', 'Right now'], ['spread', 'Likely spread'], ['hot', 'Hottest places'], ['named', 'Named fires'], ['when', 'When fires were seen'], ['about', 'About live data']],
   defaults: () => ({ when: true, about: true, 'stat:live-night': true }),
   bodies: {
     now: statsBody(LIVE_STATS),
+    spread: `<p class="sub" id="spread-status">Turn on Likely spread in the Live menu, then zoom in on a fire.</p>
+      <div class="fold shut" id="spread-more" inert><div>
+        <ol id="spread-bands" class="rows spread-rows"></ol>
+      </div></div>
+      <p class="sub">Based on land cover only (ESA WorldCover): forest, shrub and grass carry fire, crops and wetland slow it; water, towns, rock and ice stop it. No wind, weather or terrain. Not an official forecast.</p>`,
     hot: '<p class="sub">Grouped into areas about 50 km across, by total radiative power. Select one to fly there.</p><ol id="live-hot" class="rows places"></ol>',
     named: '<p class="sub">Incidents reported in the last 30 days, from NASA EONET (mostly IRWIN, United States).</p><ol id="live-named-list" class="rows places"></ol>',
     when: '<p class="sub">Detections in each 3-hour slot, UTC. Peaks follow the satellites\' passes.</p><div class="chart" id="c-live"></div>',
@@ -231,7 +253,7 @@ map.on('click', (e) => {
   if (P.tab !== 'live' || drawing || !map.getLayer('live-dot') || map.getZoom() < 4.5) return;
   const pad = 6, box = [[e.point.x - pad, e.point.y - pad], [e.point.x + pad, e.point.y + pad]];
   const f = map.queryRenderedFeatures(box, { layers: ['live-dot'] }).sort((a, b) => b.properties.p - a.properties.p)[0];
-  if (!f) return closePopup();
+  if (!f) return spreadPopup(e) || closePopup();
   const p = f.properties, [lng, lat] = f.geometry.coordinates;
   popupAt([lng, lat], `<p><b>Satellite fire detection</b><br>${num(p.p, 1)} MW at ${fmtTime.format(p.t)} UTC (${ago(p.t)}, ${p.night ? 'night' : 'day'})${p.n > 1 ? `<br>Strongest of ${p.n} detections here` : ''}<br>Confidence: ${['low', 'nominal', 'high'][p.c]}</p>${calendarLink(lng, lat)}`);
 });
@@ -241,11 +263,13 @@ map.on('mouseleave', 'live-dot', () => { if (P.tab === 'live') map.getCanvas().s
 /* ----------------------------------------------------------- the sheet */
 
 const markWindow = choice('live-window', P.live.window, (v) => { P.live.window = v; loadLive(); });
-for (const k of ['dots', 'named']) {
-  $('lv-' + k).checked = P.live[k];
+for (const k of ['dots', 'named', 'spread']) {
+  $('lv-' + k).checked = !!P.live[k];
   $('lv-' + k).onchange = (e) => {
     P.live[k] = e.target.checked; store.save();
-    if (k === 'dots') setLiveLayers(); else putIncidents(L.incidents?.events || []);
+    if (k === 'dots') setLiveLayers();
+    else if (k === 'spread') { SP.box = null; SP.state = 'off'; updateSpread(); }
+    else putIncidents(L.incidents?.events || []);
   };
 }
 document.addEventListener('click', (e) => {
@@ -263,6 +287,97 @@ TAB_HOOKS.live = {
     clearInterval(L.timer); clearInterval(L.clock);
     L.timer = setInterval(() => loadLive(), REFRESH);
     L.clock = setInterval(updateLiveNote, 60000);
+    updateSpread();
   },
-  leave() { clearInterval(L.timer); clearInterval(L.clock); },
+  leave() { clearInterval(L.timer); clearInterval(L.clock); clearTimeout(SP.timer); },
 };
+
+/* --------------------------------------------------------- likely spread */
+
+const spreadKm = (x) => (x >= 100 ? `${num(Math.round(x))} km²` : `${num(x, 1)} km²`);
+
+function viewBox() {
+  const b = map.getBounds();
+  return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map((x) => +x.toFixed(3));
+}
+const inside = (a, b) => b && a[0] >= b[0] && a[1] >= b[1] && a[2] <= b[2] && a[3] <= b[3];
+
+function setSpreadStatus(text, more = false) {
+  if ($('spread-status')) swap($('spread-status'), text);
+  if ($('spread-more')) fold($('spread-more'), more);
+}
+
+/* Called whenever the view settles: load spread for the fires in view, if zoomed in enough. */
+function updateSpread() {
+  clearTimeout(SP.timer);
+  if (P.tab !== 'live') return;
+  if (!P.live.spread) {
+    SP.token++; SP.data = null; SP.box = null; setLiveLayers();
+    setSpreadStatus('Turn on Likely spread in the Live menu, then zoom in on a fire.');
+    return;
+  }
+  const box = viewBox(), span = Math.max(box[2] - box[0], box[3] - box[1]);
+  if (map.getZoom() < SPREAD_MIN_ZOOM || span > SPREAD_SPAN) {
+    SP.token++;
+    if (SP.data) { SP.data = null; SP.box = null; setLiveLayers(); }
+    setSpreadStatus('Zoom in on a fire to see where it could spread.');
+    if (SP.state !== 'hint') { SP.state = 'hint'; banner('Zoom in on a fire to see where it could spread.'); }
+    return;
+  }
+  if (SP.data && inside(box, SP.box)) return;
+  SP.timer = setTimeout(() => loadSpread(box), 450);
+}
+
+async function loadSpread(box) {
+  const token = ++SP.token;
+  SP.state = 'loading';
+  setBusy('spread', true);
+  setSpreadStatus('Reading land cover around the fires in view…', !!SP.data);
+  let d;
+  try { d = await getJSON(`/api/spread?bbox=${box.join(',')}`); } catch (err) {
+    if (token !== SP.token) return;
+    setBusy('spread', false); SP.state = 'error';
+    setSpreadStatus(`Could not work out likely spread: ${esc(err.message)}`);
+    return;
+  }
+  setBusy('spread', false);
+  if (token !== SP.token) return;
+  SP.state = 'shown'; SP.data = d; SP.box = d.bbox;
+  map.getSource('spread').setData({
+    type: 'FeatureCollection',
+    features: d.cells.map(([lat, lon, b, k, km]) => ({ type: 'Feature', properties: { b, k, km }, geometry: { type: 'Point', coordinates: [lon, lat] } })),
+  });
+  if (d.resolution) map.setPaintProperty('spread-cell', 'circle-radius', groundRadius(d.resolution, (d.bbox[1] + d.bbox[3]) / 2, 1.2));
+  setLiveLayers();
+  renderSpread();
+}
+
+function renderSpread() {
+  const d = SP.data;
+  if (!d) return;
+  if (!d.fires) { setSpreadStatus('No fires detected in view in the last 48 hours.'); return; }
+  const main = (fuel) => Object.entries(fuel || {}).filter(([k]) => d.classes[k]).sort((a, b) => b[1] - a[1])[0];
+  const row = (color, name, value, text) => `<button type="button" tabindex="-1"><span><i class="swatch" style="background:${color}"></i>${name}</span><span><b>${value}</b> ${text}</span></button>`;
+  const rows = d.bands.map((b) => {
+    const top = main(b.fuel);
+    return row(SPREAD_COLORS[b.band], b.name, spreadKm(b.km2), `of burnable land, ~${b.km} km of fuel from a fire${top ? ` · mostly ${esc(d.classes[top[0]].toLowerCase())}` : ''}`);
+  });
+  const bar = main(d.barrier_fuel);
+  rows.push(row(SPREAD_COLORS[0], 'Barriers', spreadKm(d.barrier_km2), `of unburnable land at the edge${bar ? ` · mostly ${esc(d.classes[bar[0]].toLowerCase())}` : ''}`));
+  setList($('spread-bands'), rows);
+  setSpreadStatus(`${num(d.fires)} fire detection${d.fires === 1 ? '' : 's'} in view in the last 48 hours.${d.sampled ? ' Thinned for drawing.' : ''}`, true);
+}
+
+function spreadPopup(e) {
+  if (!P.live.spread || !SP.data || !map.getLayer('spread-cell')) return false;
+  const pad = 3, box = [[e.point.x - pad, e.point.y - pad], [e.point.x + pad, e.point.y + pad]];
+  const f = map.queryRenderedFeatures(box, { layers: ['spread-cell'] })[0];
+  if (!f) return false;
+  const p = f.properties, land = SP.data.classes[p.k] || 'Unknown land';
+  popupAt(e.lngLat, p.b
+    ? `<p><b>${SPREAD_NAME[p.b]} spread</b><br>${esc(land)} · ~${num(p.km, 1)} km of fuel from the nearest fire</p><p class="sub">Land cover only; no wind or weather.</p>`
+    : `<p><b>Natural barrier</b><br>${esc(land)} · fire is unlikely to cross here</p>`);
+  return true;
+}
+
+map.on('moveend', () => { if (P.tab === 'live') updateSpread(); });

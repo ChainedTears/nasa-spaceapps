@@ -9,6 +9,7 @@ records for an area and period, live fires worldwide, and a fire calendar.
 
 import functools
 import gzip
+import math
 import traceback
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -90,6 +91,23 @@ def cached_calendar(bbox):
 @app.route("/api/calendar")
 def calendar():
     return guarded(lambda: cached_calendar(tuple(firedata.parse_bbox(request.args))))
+
+
+@functools.lru_cache(maxsize=64)
+def cached_spread(bbox, updated):
+    return firedata.likely_spread(list(bbox))
+
+
+@app.route("/api/spread")
+def spread():
+    def load():
+        w, s, e, n = firedata.parse_bbox(request.args)
+        # Snap outward to 0.05° so small pans reuse the same result.
+        snap = lambda x, f: round(f(x / 0.05) * 0.05, 2)
+        bbox = (snap(w, math.floor), snap(s, math.floor), snap(e, math.ceil), snap(n, math.ceil))
+        # Keyed on the FIRMS update time: new detections give a new answer.
+        return cached_spread(bbox, firedata.live_fires("48h")["updated"])
+    return guarded(load)
 
 
 @app.route("/api/<kind>")

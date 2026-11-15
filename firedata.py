@@ -11,12 +11,14 @@ area and dates passed in instead of typed in / hard-coded:
     (live)                     -> live_fires()       NASA FIRMS VIIRS, last 24 h to 7 days
                                   live_incidents()   NASA EONET named wildfires
     (calendar)                 -> fire_calendar()    MODIS MCD64A1 burned area by month
+    (spread)                   -> likely_spread()    ESA WorldCover burnable land around live fires
 
 Everything comes back as plain dicts/lists on a shared (lat, lon, time)
 footing so the browser can overlay and compare the records directly.
 """
 
 import csv
+import heapq
 import io
 import json
 import math
@@ -542,3 +544,156 @@ def parse_bbox(args):
     if len(bbox) != 4:
         raise ValueError("bbox needs four numbers: west,south,east,north.")
     return [round(x, 4) for x in bbox]
+
+
+# --------------------------------------------------------------------------
+# Likely spread: which land around live fires can carry them (ESA WorldCover)
+# --------------------------------------------------------------------------
+
+# ESA WorldCover class -> (name, fuel weight). Weight 1 carries fire easily,
+# 0 stops it (water, towns, rock, ice).
+LAND_CLASSES = {
+    10: ("Tree cover", 1.0),
+    20: ("Shrubland", 1.0),
+    30: ("Grassland", 1.0),
+    40: ("Cropland", 0.5),
+    50: ("Built-up", 0.0),
+    60: ("Bare or sparse", 0.0),
+    70: ("Snow and ice", 0.0),
+    80: ("Water", 0.0),
+    90: ("Herbaceous wetland", 0.25),
+    95: ("Mangroves", 0.25),
+    100: ("Moss and lichen", 0.5),
+}
+SPREAD_BANDS = [(1, 2.0, "Very likely"), (2, 5.0, "Likely"), (3, 12.0, "Possible")]   # band, effective km, name
+SPREAD_MAX_SPAN = 2.0       # largest box side, in degrees
+MAX_SPREAD_CELLS = 60_000
+
+
+def _land_cover(bbox, resolution):
+    """WorldCover class per grid cell (most common 10 m class in each cell), cached on disk."""
+    key = "landcover_" + "_".join(f"{x:.3f}" for x in bbox) + f"_{resolution}"
+    cache_file = CACHE_DIR / f"{key}.npz"
+    if cache_file.exists():
+        saved = np.load(cache_file)
+        return saved["classes"], saved["lats"], saved["lons"]
+
+    items = list(catalog().search(collections=["esa-worldcover"], bbox=bbox).item_collection())
+    if not items:
+        raise ValueError("No ESA WorldCover map covers this place.")
+    newest = max(item.datetime or item.properties.get("start_datetime") for item in items)
+    items = [item for item in items if (item.datetime or item.properties.get("start_datetime")) == newest] or items
+    data = odc.stac.load(
+        items, crs="EPSG:4326", bbox=bbox, bands=["map"], resolution=resolution,
+        resampling="mode", groupby="solar_day", chunks={},
+    ).compute(scheduler="threads", num_workers=16)
+    grid = data["map"].max("time") if "time" in data["map"].dims else data["map"]
+    classes = np.nan_to_num(grid.values).astype(np.uint8)
+    lats, lons = grid["latitude"].values, grid["longitude"].values
+    np.savez_compressed(cache_file, classes=classes, lats=lats, lons=lons)
+    return classes, lats, lons
+
+
+def likely_spread(bbox, fires=None):
+    """Where live fires inside `bbox` could spread, judged by land cover alone.
+
+    A cost-distance search starts at every live detection and walks outward
+    through burnable land: one km of forest, shrub or grass costs one km, crops
+    cost two, wetland four; water, towns, bare rock and ice cannot be crossed.
+    Cells are banded by that effective distance. No wind, weather or terrain.
+    """
+    check_bbox(bbox)
+    west, south, east, north = bbox
+    if east - west > SPREAD_MAX_SPAN or north - south > SPREAD_MAX_SPAN:
+        raise ValueError(f"Zoom in: likely spread works on areas under {SPREAD_MAX_SPAN:g} degrees on a side.")
+    if fires is None:
+        fires = live_fires("48h")
+    seeds = [(f[0], f[1]) for f in fires["fires"] if south <= f[0] <= north and west <= f[1] <= east]
+    result = {
+        "bbox": bbox,
+        "updated": fires["updated"],
+        "fires": len(seeds),
+        "bands": [{"band": b, "km": km, "name": name, "km2": 0.0, "fuel": {}} for b, km, name in SPREAD_BANDS],
+        "barrier_km2": 0.0,
+        "classes": {str(k): v[0] for k, v in LAND_CLASSES.items()},
+        "cells": [],
+    }
+    if not seeds:
+        return result
+
+    resolution = grid_resolution(bbox, 0.002, 400)
+    classes, lats, lons = _land_cover(bbox, resolution)
+    km2 = pixel_area_km2(bbox, resolution)
+    result.update(resolution=resolution, pixel_km2=km2)
+    weight = np.zeros(256)
+    for code, (_, w) in LAND_CLASSES.items():
+        weight[code] = w
+    fuel = weight[classes]
+    rows, cols = classes.shape
+    dy = abs(float(lats[1] - lats[0])) * 111.32 if rows > 1 else resolution * 111.32
+    dx = abs(float(lons[1] - lons[0])) * 111.32 * math.cos(math.radians((south + north) / 2)) if cols > 1 else dy
+    steps = [(dr, dc, math.hypot(dr * dy, dc * dx)) for dr in (-1, 0, 1) for dc in (-1, 0, 1) if dr or dc]
+    limit = SPREAD_BANDS[-1][1]
+
+    # Dijkstra from every fire, on the 8-connected grid.
+    dist = np.full(classes.shape, np.inf)
+    heap = []
+    lat0, lon0 = float(lats[0]), float(lons[0])
+    lat_step, lon_step = float(lats[1] - lats[0]) if rows > 1 else -resolution, float(lons[1] - lons[0]) if cols > 1 else resolution
+    for lat, lon in seeds:
+        r = min(max(int(round((lat - lat0) / lat_step)), 0), rows - 1)
+        c = min(max(int(round((lon - lon0) / lon_step)), 0), cols - 1)
+        if dist[r, c] > 0:
+            dist[r, c] = 0.0
+            heap.append((0.0, r, c))
+    heapq.heapify(heap)
+    while heap:
+        d, r, c = heapq.heappop(heap)
+        if d > dist[r, c]:
+            continue
+        for dr, dc, step in steps:
+            rr, cc = r + dr, c + dc
+            if 0 <= rr < rows and 0 <= cc < cols:
+                w = fuel[rr, cc]
+                if w <= 0:
+                    continue
+                nd = d + step / w
+                if nd <= limit and nd < dist[rr, cc]:
+                    dist[rr, cc] = nd
+                    heapq.heappush(heap, (nd, rr, cc))
+
+    reached = np.isfinite(dist)
+    band = np.zeros(classes.shape, dtype=np.uint8)
+    for b, km, _ in reversed(SPREAD_BANDS):
+        band[reached & (dist <= km)] = b
+    # Barriers: land that cannot burn, right at the edge of the two nearer bands.
+    near = (band == 1) | (band == 2)
+    padded = np.pad(near, 1)
+    edge = np.zeros_like(near)
+    for dr, dc, _ in steps:
+        edge |= padded[1 + dr:1 + dr + rows, 1 + dc:1 + dc + cols]
+    barrier = edge & (fuel <= 0) & ~reached
+
+    for entry in result["bands"]:
+        mask = band == entry["band"]
+        entry["km2"] = round(float(mask.sum()) * km2, 2)
+        codes, counts = np.unique(classes[mask], return_counts=True)
+        entry["fuel"] = {str(int(k)): round(float(n) * km2, 2) for k, n in zip(codes, counts)}
+    result["barrier_km2"] = round(float(barrier.sum()) * km2, 2)
+    codes, counts = np.unique(classes[barrier], return_counts=True)
+    result["barrier_fuel"] = {str(int(k)): round(float(n) * km2, 2) for k, n in zip(codes, counts)}
+
+    # [lat, lon, band 1|2|3 (0 = barrier), WorldCover class, effective km from the nearest fire]
+    cells = []
+    rr, cc = np.nonzero(band > 0)
+    for r, c in zip(rr, cc):
+        cells.append([round(float(lats[r]), 4), round(float(lons[c]), 4), int(band[r, c]), int(classes[r, c]), round(float(dist[r, c]), 1)])
+    rr, cc = np.nonzero(barrier)
+    for r, c in zip(rr, cc):
+        cells.append([round(float(lats[r]), 4), round(float(lons[c]), 4), 0, int(classes[r, c]), None])
+    if len(cells) > MAX_SPREAD_CELLS:   # keep an even sample for drawing
+        step = len(cells) / MAX_SPREAD_CELLS
+        cells = [cells[int(i * step)] for i in range(MAX_SPREAD_CELLS)]
+        result["sampled"] = True
+    result["cells"] = cells
+    return result

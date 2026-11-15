@@ -63,6 +63,7 @@
   <h2>Show</h2>
   <label class="check"><input type="checkbox" id="lv-dots"> Satellite detections <small>NASA FIRMS</small></label>
   <label class="check"><input type="checkbox" id="lv-named"> Named fires <small>NASA EONET, US</small></label>
+  <label class="check"><input type="checkbox" id="lv-spread"> Likely spread <small>Near fires in view · ESA WorldCover</small></label>
 </div>
 
 <div class="pop off" id="pop-season" inert>
@@ -83,6 +84,7 @@
     <button data-go="layers" type="button">Layers <i>›</i></button>
     <button data-go="surface" type="button">Surface <i>›</i></button>
     <button id="orbit" type="button"><span>Whole Earth</span></button>
+    <button id="tour-replay" type="button">Take the tour</button>
   </div>
   <div class="nav">
     <button id="zoom-out" type="button" aria-label="Zoom out">−</button>
@@ -118,7 +120,7 @@
 
 <div class="pop off" id="pop-credits" inert>
   <h2>Credits</h2>
-  <p class="sub">Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors, tiles by <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a>. Imagery: NASA GIBS. Terrain: Mapzen, AWS Open Data. Fire records: MODIS, Sentinel-3 SLSTR and MTBS, read from Microsoft Planetary Computer.</p>
+  <p class="sub">Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors, tiles by <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a>. Imagery: NASA GIBS. Terrain: Mapzen, AWS Open Data. Fire records: MODIS, Sentinel-3 SLSTR and MTBS, and land cover for likely spread: ESA WorldCover (CC BY 4.0), read from Microsoft Planetary Computer. Live fires: NASA FIRMS and NASA EONET. Place names: BigDataCloud.</p>
 </div>
 
 <div class="stage">
@@ -173,5 +175,6 @@
 <script src="live.js?v=3"></script>
 <script src="season.js?v=3"></script>
 <script src="globe.js?v=3"></script>
+<script src="tour.js?v=3"></script>
 </body>
 </html>

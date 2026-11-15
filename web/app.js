@@ -66,11 +66,11 @@ const saved = store.load();
 const P = {
   v: 3, tab: 'records', dash: {}, density: 'comfortable',
   layers: { fire: true, frp: true, sev: true }, mode: 'window', base: 'clean', panel: true,
-  live: { window: '24h', dots: true, named: true }, seasonSize: '2', seasonPlace: null,
+  live: { window: '24h', dots: true, named: true, spread: true }, seasonSize: '2', seasonPlace: null, tourDone: false,
   ...(saved.v === 3 ? saved : Object.fromEntries(['layers', 'mode', 'base', 'density', 'panel'].filter((k) => saved[k] != null).map((k) => [k, saved[k]]))),
 };
 if (saved.v === 2 && Array.isArray(saved.order)) P.dash.records = { order: saved.order, hide: saved.hide || defaultHide(), collapsed: saved.collapsed || {} };
-P.live = { window: '24h', dots: true, named: true, ...P.live };
+P.live = { window: '24h', dots: true, named: true, spread: true, ...P.live };
 
 function winRange(i) {
   const W = S.fires.windows;

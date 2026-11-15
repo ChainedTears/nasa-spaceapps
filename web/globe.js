@@ -251,8 +251,10 @@ function introDone() {
   introEnded = true;
   [$('title'), $('tabs'), $('view'), $('credit')].forEach((el, i) => setTimeout(() => { show(el, true); if (el === $('tabs')) markTabs(); }, i * 140));
   TAB_HOOKS[P.tab]?.ready?.();
+  // First visit: a short tour, which holds back the automatic dive below.
+  TOUR.maybeStart();
   // If nobody has touched anything, show what the page is for: dive to the first example.
-  setTimeout(() => { if (P.tab === 'records' && !S.run && !drawing && !G.touched) pickPreset(0); }, 2200);
+  setTimeout(() => { if (P.tab === 'records' && !S.run && !drawing && !G.touched && !TOUR.active && P.tourDone) pickPreset(0); }, 2200);
 }
 
 document.body.classList.toggle('compact', P.density === 'compact');
