@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fire records</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300..700;1,6..72,300..700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="map"></div>
+<div class="progress" aria-hidden="true"></div>
+
+<nav class="bar">
+  <span class="mark">Fire records</span>
+  <button class="pill" data-pop="area" type="button"><span id="summary">Choose an area</span></button>
+  <button class="pill" data-pop="layers" type="button">Layers</button>
+  <button class="pill" data-pop="custom" type="button">Customize</button>
+  <button class="pill" id="orbit" type="button">Whole Earth</button>
+</nav>
+
+<div class="pop off" id="pop-area" inert>
+  <h2>Area and period</h2>
+  <div class="list" id="presets"></div>
+  <button class="link" id="draw" type="button">Draw a new area</button>
+  <div class="dates">
+    <label>From <input type="date" id="start"></label>
+    <label>To <input type="date" id="end"></label>
+  </div>
+  <button class="primary" id="run" type="button">Load this area</button>
+</div>
+
+<div class="pop off" id="pop-layers" inert>
+  <h2>Layers</h2>
+  <label class="check"><input type="checkbox" id="l-fire"> Active fire <small>MODIS, 8-day</small></label>
+  <div class="fold"><div>
+    <div class="choice" id="mode">
+      <button data-v="window" type="button">These 8 days</button>
+      <button data-v="spread" type="button">Spread</button>
+      <button data-v="persist" type="button">Persistence</button>
+    </div>
+    <div class="legend" id="lg-fire"></div>
+  </div></div>
+  <label class="check"><input type="checkbox" id="l-frp"> Radiative power <small>Sentinel-3</small></label>
+  <div class="fold"><div><div class="legend" id="lg-frp"></div></div></div>
+  <label class="check"><input type="checkbox" id="l-sev"> Past burn severity <small>MTBS</small></label>
+  <div class="fold"><div><div class="legend" id="lg-sev"></div></div></div>
+  <h2>Surface</h2>
+  <div class="choice" id="base">
+    <button data-v="clean" type="button">Map</button>
+    <button data-v="osm" type="button">Streets</button>
+    <button data-v="gibs" type="button">Satellite</button>
+  </div>
+</div>
+
+<div class="pop off" id="pop-custom" inert>
+  <h2>Dashboard</h2>
+  <p class="sub">Choose what the dashboard shows, and in what order.</p>
+  <ul id="custom-list"></ul>
+  <button class="link" id="reset" type="button">Restore the default</button>
+</div>
+
+<div class="banner off" id="banner" role="status"></div>
+
+<div class="timeline off" id="timeline" inert>
+  <button class="pill" id="play" type="button">Play</button>
+  <div>
+    <div class="tl-text"><b id="tl-date"></b><span id="tl-note"></span></div>
+    <input type="range" id="scrub" min="0" max="0" value="0" step="1" aria-label="8-day window">
+  </div>
+</div>
+
+<aside class="panel off" id="panel" inert>
+  <header>
+    <h1 id="period">Fire records</h1>
+    <button class="link" id="panel-hide" type="button">Hide</button>
+  </header>
+  <div class="fold" id="empty-wrap"><div><p class="sub" id="empty">Choose an area and a period to begin.</p></div></div>
+  <div class="fold shut" id="report-wrap"><div id="report"></div></div>
+</aside>
+<button class="pill panel-tab off" id="panel-tab" type="button" inert>Dashboard</button>
+
+<div class="tip off" id="tip"></div>
+<script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
