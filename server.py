@@ -3,10 +3,12 @@ Web UI for the fire scripts.
 
     python3 server.py        then open http://localhost:8765
 
-Serves the page in web/ and four JSON endpoints backed by firedata.py.
+Serves the page in web/ and JSON endpoints backed by firedata.py:
+records for an area and period, live fires worldwide, and a fire calendar.
 """
 
 import functools
+import gzip
 import traceback
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -38,6 +40,56 @@ def index():
 @app.route("/api/meta")
 def meta():
     return jsonify(firedata.collection_ranges())
+
+
+@app.after_request
+def no_stale_files(response):
+    """The page and its scripts change together; never let a browser mix versions."""
+    if not request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
+@app.after_request
+def compress(response):
+    """Gzip JSON: the week of live detections is ~10 MB raw, ~2 MB gzipped."""
+    if (response.mimetype == "application/json" and response.status_code == 200
+            and "gzip" in request.headers.get("Accept-Encoding", "")
+            and not response.direct_passthrough and response.content_length and response.content_length > 2048):
+        response.set_data(gzip.compress(response.get_data(), compresslevel=5))
+        response.headers["Content-Encoding"] = "gzip"
+        response.headers["Vary"] = "Accept-Encoding"
+    return response
+
+
+def guarded(load):
+    try:
+        return jsonify(load())
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        traceback.print_exc()
+        return jsonify({"error": f"Could not load this dataset ({error})."}), 502
+
+
+@app.route("/api/live")
+def live():
+    return guarded(lambda: firedata.live_fires(request.args.get("window", "24h")))
+
+
+@app.route("/api/incidents")
+def incidents():
+    return guarded(lambda: firedata.live_incidents())
+
+
+@functools.lru_cache(maxsize=32)
+def cached_calendar(bbox):
+    return firedata.fire_calendar(list(bbox))
+
+
+@app.route("/api/calendar")
+def calendar():
+    return guarded(lambda: cached_calendar(tuple(firedata.parse_bbox(request.args))))
 
 
 @app.route("/api/<kind>")
